@@ -1,0 +1,153 @@
+server:
+  env_name: ${APP_ENV:prod}
+  port: ${PORT:8001}
+  cors:
+    enabled: true
+    allow_origins: ["*"]
+    allow_methods: ["*"]
+    allow_headers: ["*"]
+  auth:
+    enabled: false
+    secret: "Basic c2VjcmV0OmtleQ=="
+
+data:
+  local_ingestion:
+    enabled: ${LOCAL_INGESTION_ENABLED:false}
+    allow_ingest_from: ["*"]
+  local_data_folder: local_data/private_gpt
+
+ui:
+  enabled: true
+  path: /
+  default_mode: "RAG"
+  
+  default_query_system_prompt: >
+    Role: UNEMI Regulations API.
+    Task: Output raw JSON based on context.
+    
+    CRITICAL RULES:
+    1. If text says "no se aceptan justificaciones" or "prohibido" -> has_information: TRUE, needs_contact: FALSE.
+    2. If text explains how to do it -> has_information: TRUE, needs_contact: FALSE.
+    3. Only if text is silent -> has_information: FALSE, needs_contact: TRUE.
+    
+    EXAMPLES:
+    
+    Case 1: Prohibition (Use this logic for "Justificar Faltas")
+    Context: "Art 78. No se aceptarán justificaciones para las faltas."
+    User: "Como justifico una falta?"
+    JSON Output: {{ "has_information": true, "needs_contact": false, "response": "El Artículo 78 establece explícitamente que NO se aceptan justificaciones para las faltas en esta modalidad.", "sources": "Art 78" }}
+    
+    Case 2: Instructions
+    Context: "Para matricularse ingrese al SGA."
+    User: "Como me matriculo?"
+    JSON Output: {{ "has_information": true, "needs_contact": false, "response": "Debes ingresar al sistema SGA.", "sources": "Reglamento" }}
+    
+    Case 3: Missing
+    Context: "El cielo es azul."
+    User: "Cuanto cuesta el semestre?"
+    JSON Output: {{ "has_information": false, "needs_contact": true, "response": "Lo siento, esa información no está disponible, contacte a soporte.", "sources": "" }}
+    
+    Final Instruction: Respond to the real user query using this JSON format.
+
+  default_chat_system_prompt: >
+    You are a helpful assistant. Always answer in valid JSON format.
+
+  delete_file_button_enabled: true
+  delete_all_files_button_enabled: true
+
+llm:
+  mode: ollama
+  max_new_tokens: 512
+  context_window: 4096
+  num_ctx: 4096 
+  temperature: 0.0
+
+rag:
+  similarity_top_k: 4
+  max_chars: 1500
+  rerank:
+    enabled: false
+
+summarize:
+  use_async: true
+
+clickhouse:
+    host: localhost
+    port: 8443
+    username: admin
+    password: clickhouse
+    database: embeddings
+
+embedding:
+  mode: ollama
+  ingest_mode: simple
+  embed_dim: 768
+
+huggingface:
+  embedding_hf_model_name: nomic-ai/nomic-embed-text
+  access_token: ${HF_TOKEN:}
+  trust_remote_code: true
+
+vectorstore:
+  database: qdrant
+
+nodestore:
+  database: postgres
+
+milvus:
+  uri: local_data/private_gpt/milvus/milvus_local.db
+  collection_name: milvus_db
+  overwrite: false
+
+qdrant:
+  url: http://qdrant:6333
+
+postgres:
+  host: host.docker.internal
+  port: 5432
+  database: sga
+  user: postgres
+  password: postgres
+  schema_name: private_gpt
+
+# --- OLLAMA CONFIG ---
+ollama:
+  llm_model: llama3.1
+  embedding_model: nomic-embed-text
+  api_base: http://ollama-llm:11434
+  embedding_api_base: http://ollama-embed:11434
+  keep_alive: "-1"
+  request_timeout: 900.0
+  autopull_models: true
+
+# --- SECCIONES DUMMY ---
+llamacpp:
+  llm_hf_repo_id: lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF
+  llm_hf_model_file: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf
+  
+sagemaker:
+  llm_endpoint_name: huggingface
+  embedding_endpoint_name: huggingface
+
+openai:
+  api_key: ${OPENAI_API_KEY:}
+  model: gpt-3.5-turbo
+  embedding_api_key: ${OPENAI_API_KEY:}
+
+azopenai:
+  api_key: ${AZ_OPENAI_API_KEY:}
+  azure_endpoint: ${AZ_OPENAI_ENDPOINT:}
+  api_version: "2023-05-15"
+  embedding_model: text-embedding-ada-002
+  llm_model: gpt-35-turbo
+  embedding_deployment_name: "" 
+  llm_deployment_name: ""
+
+gemini:
+  api_key: ${GOOGLE_API_KEY:}
+  model: models/gemini-pro
+  embedding_model: models/embedding-001
+
+ingestion:
+  chunk_size: 1024
+  chunk_overlap: 200

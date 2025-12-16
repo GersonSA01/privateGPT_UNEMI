@@ -1,0 +1,56 @@
+FROM python:3.11.6-slim-bookworm AS base
+
+# Install poetry
+RUN pip install pipx
+RUN python3 -m pipx ensurepath
+RUN pipx install poetry==1.8.3
+ENV PATH="/root/.local/bin:$PATH"
+ENV PATH=".venv/bin/:$PATH"
+
+# https://python-poetry.org/docs/configuration/#virtualenvsin-project
+ENV POETRY_VIRTUALENVS_IN_PROJECT=true
+
+FROM base AS dependencies
+WORKDIR /home/worker/app
+COPY pyproject.toml poetry.lock ./
+
+ARG POETRY_EXTRAS="ui vector-stores-qdrant llms-ollama embeddings-ollama"
+RUN poetry lock --no-update && poetry install --no-root --extras "${POETRY_EXTRAS}"
+
+FROM base AS app
+ENV PYTHONUNBUFFERED=1
+ENV PORT=8080
+ENV APP_ENV=prod
+ENV PYTHONPATH="$PYTHONPATH:/home/worker/app/private_gpt/"
+EXPOSE 8080
+
+# Prepare a non-root user
+ARG UID=100
+ARG GID=65534
+
+RUN adduser --system --gid ${GID} --uid ${UID} --home /home/worker worker
+WORKDIR /home/worker/app
+
+RUN chown worker /home/worker/app
+RUN mkdir local_data && chown worker local_data
+RUN mkdir models && chown worker models
+
+# 1. COPIAMOS SOLO EL ENTORNO VIRTUAL (Rara vez cambia)
+COPY --chown=worker --from=dependencies /home/worker/app/.venv/ .venv
+
+# 2. INSTALAMOS LIBRERÍAS PESADAS (Ahora están ANTES del código)
+# Al estar aquí, si cambias chat_service.py, Docker NO volverá a ejecutar esto
+# porque esta línea no ha cambiado y las líneas anteriores tampoco.
+RUN .venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+RUN .venv/bin/pip install sentence-transformers
+
+# 3. FINALMENTE, COPIAMOS EL CÓDIGO (Esto cambia a cada rato)
+COPY --chown=worker private_gpt/ private_gpt
+COPY --chown=worker *.yaml .
+COPY --chown=worker scripts/ scripts
+
+USER worker
+ENTRYPOINT python -m uvicorn private_gpt.main:app \
+    --host 0.0.0.0 \
+    --port 8001 \
+    --workers 1

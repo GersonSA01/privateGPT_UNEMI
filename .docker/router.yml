@@ -1,0 +1,13 @@
+http:
+  routers:
+    ollama:
+      rule: "Host(`localhost`) && PathPrefix(`/api/ollama`)"
+      service: ollama-service
+      entryPoints:
+        - web
+
+  services:
+    ollama-service:
+      loadBalancer:
+        servers:
+          - url: "http://ollama-cpu:11434"

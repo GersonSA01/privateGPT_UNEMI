@@ -1,0 +1,138 @@
+services:
+  # =================================================================
+  # 1. OLLAMA LLM (LLAMA 3.1 - Cerebro)
+  # =================================================================
+  ollama-llm:
+    image: ollama/ollama:latest
+    container_name: ollama-llm
+    restart: always
+    ports:
+      - "11435:11434"
+    volumes:
+      - ollama_llm_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_CONTEXT_LENGTH=4096
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # =================================================================
+  # 2. OLLAMA EMBED (Nomic - Buscador)
+  # =================================================================
+  ollama-embed:
+    image: ollama/ollama:latest
+    container_name: ollama-embed
+    restart: always
+    ports:
+      - "11436:11434"
+    volumes:
+      - ollama_embed_data:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=-1
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_CONTEXT_LENGTH=2048
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # =================================================================
+  # 3. MODEL WARMER (Calienta modelos y reserva KV)
+  # =================================================================
+  model-warmer:
+    image: curlimages/curl:latest
+    container_name: model-warmer
+    restart: "no"
+    entrypoint: /bin/sh
+    depends_on:
+      ollama-llm:
+        condition: service_healthy
+      ollama-embed:
+        condition: service_healthy
+    command: >
+      -c "set -e;
+      echo '⏳ (1/4) Esperando a los servicios Ollama...' &&
+      until curl -s -f -o /dev/null http://ollama-llm:11434; do sleep 2; done &&
+      until curl -s -f -o /dev/null http://ollama-embed:11434; do sleep 2; done &&
+      echo '⬇️ (2/4) Asegurando descargas (en segundo plano)...' &&
+      curl -s -X POST http://ollama-embed:11434/api/pull -d '{\"model\":\"nomic-embed-text\",\"stream\":false}' > /dev/null &
+      curl -s -X POST http://ollama-llm:11434/api/pull -d '{\"model\":\"llama3.1\",\"stream\":false}' > /dev/null &
+      wait &&
+      echo '🔥 (3/4) CARGANDO EMBEDDING (NOMIC) EN RAM...' &&
+      curl -s -X POST http://ollama-embed:11434/api/embeddings -d '{\"model\":\"nomic-embed-text\",\"prompt\":\"warmup\"}' > /dev/null &&
+      echo '🧠 (4/4) CARGANDO LLM (LLAMA 3.1) VÍA /api/chat (CTX=4096)...' &&
+      curl -fsS --fail-with-body -H 'Content-Type: application/json' -X POST http://ollama-llm:11434/api/chat -d '{\"model\":\"llama3.1\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_ctx\":4096,\"num_predict\":1},\"messages\":[{\"role\":\"system\",\"content\":\"warmup\"},{\"role\":\"user\",\"content\":\"ping\"}]}' > /dev/null &&
+      echo '✅ TODO LISTO: Modelos cargados y memoria reservada.'"
+
+
+  # =================================================================
+  # 4. QDRANT (Base de datos vectorial)
+  # =================================================================
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant-db
+    restart: always
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # =================================================================
+  # 5. PRIVATE GPT (Tu aplicación)
+  # =================================================================
+  private-gpt-ollama:
+    image: ${PGPT_IMAGE:-zylonai/private-gpt}:${PGPT_TAG:-0.6.2}-ollama
+    container_name: private-gpt-main
+    user: root
+    build:
+      context: .
+      dockerfile: Dockerfile.ollama
+    volumes:
+      - rag_storage:/home/worker/app/local_data
+    ports:
+      - "8001:8001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      model-warmer:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      ollama-llm:
+        condition: service_healthy
+      ollama-embed:
+        condition: service_healthy
+    environment:
+      PORT: 8001
+      PGPT_MODE: ollama
+      PGPT_EMBED_MODE: ollama
+
+      PGPT_OLLAMA_API_BASE: http://ollama-llm:11434
+      PGPT_OLLAMA_EMBEDDING_API_BASE: http://ollama-embed:11434
+
+      PGPT_OLLAMA_LLM_MODEL: llama3.1
+      PGPT_OLLAMA_EMBEDDING_MODEL: nomic-embed-text
+      PGPT_OLLAMA_NUM_CTX: 4096
+      PGPT_OLLAMA_NUM_THREAD: 4
+
+      HF_TOKEN: ${HF_TOKEN:-}
+      PGPT_VECTORSTORE_DATABASE: qdrant
+      PGPT_NODESTORE_DATABASE: postgres
+
+      PGPT_POSTGRES_HOST: host.docker.internal
+      PGPT_DATABASE_URL: postgresql+asyncpg://postgres:postgres@host.docker.internal:5432/sga
+      PGPT_POSTGRES_PORT: 5432
+      PGPT_POSTGRES_DB: sga
+      PGPT_POSTGRES_USER: postgres
+      PGPT_POSTGRES_PASSWORD: postgres
+
+volumes:
+  rag_storage:
+  ollama_llm_data:
+  ollama_embed_data:
+  qdrant_data:
