@@ -93,11 +93,11 @@ En la primera ejecución, Docker:
 ```powershell
 # Para CPU
 docker-compose exec ollama-cpu ollama pull llama3.1-instruct-q4_K_M 
-docker-compose exec ollama-cpu ollama pull nomic-embed-text
+docker-compose exec ollama-cpu ollama pull bge-m3
 
 # Para GPU
 docker-compose exec ollama-cuda ollama pull llama3.1-instruct-q4_K_M 
-docker-compose exec ollama-cuda ollama pull nomic-embed-text
+docker-compose exec ollama-cuda ollama pull bge-m3
 ```
 
 ## 🌐 Acceso a los servicios

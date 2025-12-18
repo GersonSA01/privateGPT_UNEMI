@@ -18,7 +18,7 @@ embedding:
   mode: huggingface
 
 huggingface:
-  embedding_hf_model_name: nomic-ai/nomic-embed-text
+  embedding_hf_model_name: bge-m3
 
 vectorstore:
   database: qdrant

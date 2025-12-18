@@ -15,7 +15,7 @@ embedding:
 
 ollama:
   llm_model: gemma2:2b
-  embedding_model: nomic-embed-text
+  embedding_model: bge-m3
   api_base: http://localhost:11434
 
 nodestore:

@@ -12,7 +12,7 @@ embedding:
 
 ollama:
   llm_model: llama3.1
-  embedding_model: nomic-embed-text
+  embedding_model: bge-m3
   api_base: http://localhost:11434
   embedding_api_base: http://localhost:11434  # change if your embedding model runs on another ollama
   keep_alive: "60m"

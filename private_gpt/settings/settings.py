@@ -295,7 +295,7 @@ class OllamaSettings(BaseModel):
     )
     embedding_model: str = Field(
         None,
-        description="Model to use. Example: 'nomic-embed-text'.",
+        description="Model to use. Example: 'bge-m3'.",
     )
     keep_alive: str = Field(
         "60m",

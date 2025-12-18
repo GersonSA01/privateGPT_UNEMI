@@ -100,8 +100,8 @@ class IngestService:
             # =================================================================
             # SOLUCIÓN 3: REDUCIR TAMAÑO DE CHUNK
             # =================================================================
-            chunk_sz = 256  # <--- BAJADO DE 512
-            chunk_ov = 30   # <--- BAJADO DE 50
+            chunk_sz = 512  # <--- BAJADO DE 512
+            chunk_ov = 80   # <--- BAJADO DE 50
 
         logger.info(f"⚙️ FINAL CHUNK CONFIG: Size={chunk_sz}, Overlap={chunk_ov}")
 

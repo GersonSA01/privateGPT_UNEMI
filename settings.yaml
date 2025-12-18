@@ -58,15 +58,17 @@ ui:
 llm:
   mode: ollama
   max_new_tokens: 512
-  context_window: 4096
+  context_window: 8192
   num_ctx: 4096 
   temperature: 0.0
 
 rag:
-  similarity_top_k: 4
-  max_chars: 1500
+  similarity_top_k: 30
+  max_chars: 1200
   rerank:
-    enabled: false
+    enabled: true
+    top_n: 8
+    model: cross-encoder/mmarco-mMiniLMv2-L12-H384-v1
 
 summarize:
   use_async: true
@@ -81,10 +83,10 @@ clickhouse:
 embedding:
   mode: ollama
   ingest_mode: simple
-  embed_dim: 768
+  embed_dim: 1024
 
 huggingface:
-  embedding_hf_model_name: nomic-ai/nomic-embed-text
+  embedding_hf_model_name: bge-m3
   access_token: ${HF_TOKEN:}
   trust_remote_code: true
 
@@ -113,7 +115,7 @@ postgres:
 # --- OLLAMA CONFIG ---
 ollama:
   llm_model: llama3.1
-  embedding_model: nomic-embed-text
+  embedding_model: bge-m3
   api_base: http://ollama-llm:11434
   embedding_api_base: http://ollama-embed:11434
   keep_alive: "-1"
@@ -138,7 +140,7 @@ azopenai:
   api_key: ${AZ_OPENAI_API_KEY:}
   azure_endpoint: ${AZ_OPENAI_ENDPOINT:}
   api_version: "2023-05-15"
-  embedding_model: text-embedding-ada-002
+  embedding_model: bge-m3
   llm_model: gpt-35-turbo
   embedding_deployment_name: "" 
   llm_deployment_name: ""
@@ -146,8 +148,8 @@ azopenai:
 gemini:
   api_key: ${GOOGLE_API_KEY:}
   model: models/gemini-pro
-  embedding_model: models/embedding-001
+  embedding_model: bge-m3
 
 ingestion:
-  chunk_size: 1024
-  chunk_overlap: 200
+  chunk_size: 512
+  chunk_overlap: 80
