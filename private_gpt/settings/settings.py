@@ -333,6 +333,10 @@ class OllamaSettings(BaseModel):
         False,
         description="If set to True, the Ollama will automatically pull the models from the API base.",
     )
+    json_mode: bool = Field(
+        False,
+        description="Force JSON output mode. When True, Ollama will attempt to ensure all responses are valid JSON.",
+    )
 
 
 class AzureOpenAISettings(BaseModel):

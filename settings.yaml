@@ -121,6 +121,7 @@ ollama:
   keep_alive: "-1"
   request_timeout: 900.0
   autopull_models: true
+  json_mode: true 
 
 # --- SECCIONES DUMMY ---
 llamacpp:

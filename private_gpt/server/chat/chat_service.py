@@ -46,48 +46,68 @@ ROLE: Intent Classifier & Search Optimizer.
 TASK: Analyze the USER QUERY. Output ONLY valid JSON.
 
 ### CONTEXT:
-- Active Process: {active_process_str}
 - History: {history_str}
 - Tools: {data_tools}
+- Active process: {active_process_str}
 
 ### CLASSIFICATION LOGIC (HIERARCHY):
-1. GREETING: User says "Hola", "Buenos días" ONLY.
-2. CRISIS_SUPPORT: Emotional distress, violence, abuse -> CLASSIFY AS "HUMAN_HANDOFF".
-3. OFF_TOPIC (STRICT): 
-   - Queries about recipes, food, sports, movies, jokes, politics unrelated to the University.
-4. FUNCTION (STRICT MATCHING): 
-   - Select ONLY if the user's intent MATCHES the purpose of a tool listed in [TOOLS_LIST] EXACTLY.
-   - CRITICAL: Do NOT force a match based on partial keywords.
-   - Example: If user asks for "Cambio de Sede" and the tool is "Cambio de Carrera", DO NOT select "Cambio de Carrera". Classify as "RAG".
-5. RAG: 
-   - User asks for info, dates, requirements, regulations.
-   - User asks for a process NOT listed in Tools (e.g., "Homologación", "Cambio de Sede" if not in tools).
-6. HUMAN_HANDOFF: User asks for a person/agent.
-7. AMBIGUOUS: 
-   - The query is ACADEMIC but too short/vague to search. 
-   - DO NOT use this for non-academic topics.
+1) GREETING:
+   - Only if the user message is JUST a short greeting (e.g., "hola", "buenos días", "hello", "hi") and nothing else.
 
-### SEARCH QUERY OPTIMIZATION RULES (CRITICAL FOR RAG):
-Your goal is to generate a `search_query` optimized for Vector Search (Keywords).
-1. **EXTRACT CONCEPTS**: Identify academic terms (e.g., "Matrícula", "Nivelación", "Admisión", "Retiro", "Sanción").
-2. **CONTEXTUALIZE**: 
-   - If user says "PRE", "Curso de nivelación" or "Admisión" -> You MUST add keyword "Nivelación Admisión".
-   - If user says "No pude presentarme", "perdí cupo" or "no continué" -> Add keyword "Sanción Segunda Matrícula".
-3. **REMOVE NOISE (STRICT)**: 
-   - REMOVE references to attachments.
-   - REMOVE personal excuses.
-   - REMOVE greetings.
-4. **FORMAT**: Return a string of keywords, not a full sentence.
+2) CRISIS_SUPPORT:
+   - Emotional distress, self-harm, violence, abuse -> CLASSIFY AS "HUMAN_HANDOFF".
+
+3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY OVER RAG):
+    - CRITICAL RULE: Identify SYSTEM ERRORS, BUGS, or GLITCHES.
+    - Triggers: "error 500", "página en blanco", "no carga", "se cayó", "no suma mis puntos", "botón no funciona".
+    - EXCEPTION: If the user mentions "no alcancé" or "se cerró" WITHOUT mentioning specific system errors (like "error 500", "bug", "falla"), classify as "RAG". If they explicitely mention a system error causing the missed deadline, KEEP AS "PLATFORM_OR_TECH_ISSUE".
+4) OFF_TOPIC (STRICT):
+   - Recipes, food, sports, movies, jokes, politics unrelated to the University -> "OFF_TOPIC"
+
+5) FUNCTION (STRICT MATCHING):
+   - Select ONLY if the user's intent matches a tool in [TOOLS_LIST] EXACTLY.
+   - Do NOT force a match based on partial keywords.
+
+6) RAG (ACADEMIC INFO & PROCEDURES):
+    - User asks for regulations, dates, requirements, or theoretical concepts.
+    - INCLUDES: Questions about missed deadlines, extensions ("prórrogas"), late submissions ("rezagados"), or closed processes.
+    - EXCLUSION: If the user clearly describes a technical BUG, use TECH_ISSUE.
+
+7) AMBIGUOUS:
+   - Academic but too vague/short to search (e.g., "ayuda", "no puedo") AND NOT a platform/tech issue.
+   - If ambiguous, ask ONE short clarifying question.
+
+8) HUMAN_HANDOFF:
+   - If the user explicitly asks for a human agent/advisor/staff.
+
+### SEARCH QUERY OPTIMIZATION RULES (ONLY IF classification == "RAG"):
+- GOAL: Generate a standalone search query that INCLUDES the context from {history_str}.
+- COREFERENCE RESOLUTION (CRITICAL):
+  1. If the user says "eso", "el trámite", "el archivo", "del mismo", or "no pude", you MUST look at {history_str} to find the specific topic (e.g., "Prácticas", "Tesis", "Matrícula").
+  2. REPLACE the vague pronoun with the specific topic from history.
+- REMOVE: Greetings, PII (names/IDs), and emotional filler.
+- FORMAT: [Specific Issue/Action] + [Context Topic from History]
+- EXAMPLES:
+  * History="User asks about Prácticas Preprofesionales", Current="No alcancé a subir el archivo" -> search_query="no alcanzó a subir archivo practicas preprofesionales".
+  * History="User asks about Beca", Current="cuándo pagan eso" -> search_query="fecha pago beca".
+  * Current="No me carga la página" -> search_query="error carga plataforma".
 
 ### OUTPUT FORMAT (Strict JSON):
+IMPORTANT RULES:
+- If classification != "RAG" => search_query MUST be null.
+- If classification != "FUNCTION" => function_name MUST be null.
+- If classification != "AMBIGUOUS" => clarification MUST be null.
+- If classification != "HUMAN_HANDOFF" => handoff_message MUST be null.
+
 {
   "classification": "FUNCTION" | "HUMAN_HANDOFF" | "AMBIGUOUS" | "RAG" | "GREETING" | "OFF_TOPIC",
-  "search_query": "<OPTIMIZED KEYWORDS if RAG, otherwise null>",
-  "function_name": "<Tool Name OR null>",
-  "clarification": "<String in spanish asking for more info ONLY IF AMBIGUOUS, otherwise null>",
-  "handoff_message": "<String if HANDOFF OR null>"
+  "search_query": "<KEYWORDS if RAG else null>",
+  "function_name": "<Tool Name if FUNCTION else null>",
+  "clarification": "<Spanish question ONLY if AMBIGUOUS else null>",
+  "handoff_message": "<Spanish message ONLY if HUMAN_HANDOFF else null>"
 }
 """
+
 
 RAG_EXPERT_PROMPT = """
 ROLE: UNEMI Virtual Assistant - You are a friendly agent helping students and teachers.
@@ -110,26 +130,35 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
      - Say conversationally in Spanish: "En la normativa que revisé no encontré información sobre un mecanismo formal para extender el plazo o reabrir el proceso..."
      - Then continue with what IS in the document.
 
-3) **GUIDANCE ALLOWED (BUT MUST BE CLEAR):**
-   - You MAY recommend operational next steps (e.g., "contactar al Vicerrectorado", "Dirección de Carrera") ONLY if:
-     A) That unit is explicitly mentioned in the document as part of the process, OR
-     B) You label it as **general guidance** (not a rule) when not mandated by the document.
-   - If using B, be careful (avoid "debes", "garantizado", "te reabrirán").
+3) **HANDLING IMPOSSIBLE REQUESTS & CONSEQUENCES (CRITICAL):**
+   - If the user asks for a solution (e.g., "What can I do?", "How to upload late?") and the document mentions a **NEGATIVE CONSEQUENCE** (e.g., "no se convalidarán", "se anulará", "reprobado"), **THIS CONSEQUENCE IS THE ANSWER.**
+   - **DO NOT** say "I didn't find information on a mechanism to fix it".
+   - **DO NOT** start with "Lo siento".
+   - You MUST directy state the consequence found in the text.
+   - Example: 
+     - Text: "No se convalidarán las horas si no sube a tiempo."
+     - User: "No alcancé a subir, ¿qué hago?"
+     - Response: "El reglamento es estricto en este punto: según el [Documento], si se incumple con los requisitos, **las horas no serán convalidadas**."
 
-4) **CONTROLLED INFERENCE:**
+4) **PROCEDURAL GUIDANCE ONLY (STRICT):**
+   - You MAY mention a department or role (e.g., "Vicerrectorado", "Director de Carrera") ONLY if the document explicitly states that the user must submit a request or document to them.
+   - You MUST NOT add generic advice like "Te recomiendo contactar a..." or "Podrías preguntar en..." if the text does not strictly say so.
+   - If the document lists a step, state it as a rule ("El reglamento indica entregar esto en Secretaría"), NOT as your personal suggestion.
+
+5) **CONTROLLED INFERENCE:**
    - If the exact scenario is not mentioned but the document has a general rule that reasonably applies
      (deadlines, requirements, force majeure, validation steps), you may adapt it.
    - When inferring, use cautious phrasing in Spanish:
      - "Según lo que establece el reglamento..." / "En general, el reglamento indica..." / "Esto sugiere que..."
    - Never invent timeframes, forms, departments, or approvals not present in the context.
 
-5) **BRIDGE WITH THE USER:**
+6) **BRIDGE WITH THE USER:**
    - Acknowledge the user's situation in 1 sentence (in Spanish, friendly).
    - Then cite the rule and explain what it implies (in Spanish, conversational).
    - End with next steps that are either:
      - based on the document, OR clearly labeled as "general guidance".
 
-6) **WHEN answer_found IS FALSE:**
+7) **WHEN answer_found IS FALSE:**
    - If you cannot find relevant information in the provided context:
      - Set "answer_found": false
      - Your "response" MUST include (in Spanish, conversational): "¿Deseas que te contacte con mis compañeros humanos?"
@@ -137,7 +166,7 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
 
 ### TONE AND STYLE:
 - Speak as a friendly and empathetic virtual assistant
-- Use "tú" (not "usted" unless context requires it)
+- Use "usted" (not "tú" unless context requires it)
 - Be clear but conversational
 - Avoid unnecessary technical terms
 - Show understanding for the student/teacher's situation
@@ -208,57 +237,6 @@ class PGChatEngineInput:
             last_message = working_messages.pop(-1)
         return cls(system_message=system_message, last_message=last_message, chat_history=working_messages if working_messages else [])
 
-class KeywordRelevanceFilterPostprocessor(BaseNodePostprocessor):
-    """Filtro léxico rápido para descartar basura obvia antes del Reranker costoso."""
-    min_hit_ratio: float = 0.06
-    min_hits: int = 1
-    max_nodes: int = 20
-
-    def _keywords(self, query: str) -> list[str]:
-        q = (query or "").lower()
-        # Palabras clave académicas para dar boost
-        boost_phrases = ["matricul", "matrícul", "retiro", "baja", "anul", "carrera", "nivelación", "arancel", "rubro", "deuda", "saldo", "pago"]
-        
-        # Regex para sacar palabras de más de 4 letras
-        words = re.findall(r"[a-záéíóúñ]{4,}", q)
-        
-        for bp in boost_phrases:
-            if bp in q:
-                words.append(bp)
-        
-        seen = set()
-        out = []
-        for w in words:
-            if w not in seen:
-                seen.add(w)
-                out.append(w)
-        return out
-
-    def _hit_score(self, keywords: list[str], text: str) -> tuple[int, float]:
-        t = (text or "").lower()
-        hits = sum(1 for k in keywords if k in t)
-        ratio = hits / max(len(keywords), 1)
-        return hits, ratio
-
-    def _postprocess_nodes(self, nodes: list[NodeWithScore], query_bundle=None) -> list[NodeWithScore]:
-        if not nodes: return nodes
-        query_str = ""
-        if query_bundle is not None:
-            query_str = getattr(query_bundle, "query_str", "") or ""
-            
-        keywords = self._keywords(query_str)
-        if not keywords: return nodes[: self.max_nodes]
-        
-        kept: list[NodeWithScore] = []
-        for n in nodes:
-            content = n.node.get_content() or ""
-            hits, ratio = self._hit_score(keywords, content)
-            if hits >= self.min_hits and ratio >= self.min_hit_ratio:
-                kept.append(n)
-                
-        # Si el filtro es muy estricto y borra todo, devolvemos los originales
-        if not kept: return nodes[: self.max_nodes]
-        return kept[: self.max_nodes]
 
 # ==============================================================================
 # 3. CHAT SERVICE PRINCIPAL
@@ -305,7 +283,7 @@ class ChatService:
         # Esto descarga el modelo (si no existe) y lo deja fijo en la RAM
         self.reranker = SentenceTransformerRerank(
             model="BAAI/bge-reranker-base", 
-            top_n=3  # Mantenemos 3 para balance entre precisión y velocidad
+            top_n=5 
         )
         
         logger.info(f"✅ [INIT] Reranker cargado y listo en {time.perf_counter()-t0:.2f}s")
@@ -364,8 +342,14 @@ class ChatService:
                 return {"type": "RAG", "payload": query}
 
             cls_type = data.get("classification", "RAG")
+
+            if cls_type == "PLATFORM_OR_TECH_ISSUE":
+                return {
+                    "type": "TECH_ISSUE",
+                    # Aquí definimos el mensaje empático por defecto, aunque lo podemos sobreescribir en views.py
+                    "payload": "Lamento que tengas problemas con la plataforma. Te voy a derivar con mis compañeros humanos por favor dame de nuevo los detalles de la solicitud y adjunto algun archivo si es necesario" 
+                }
             
-            # --- CAMBIO IMPORTANTE AQUÍ ---
             # Si es RAG, devolvemos la query optimizada ("search_query") en lugar de null
             if cls_type == "RAG":
                 optimized_query = data.get("search_query") or query  # Fallback a original si viene null
@@ -409,7 +393,7 @@ class ChatService:
             # --- ESTRATEGIA DE RECUPERACIÓN OPTIMIZADA ---
             # 1. Recuperación amplia (15 docs) para no perder nada relevante
             vector_index_retriever = self.index.as_retriever(
-                similarity_top_k=15, 
+                similarity_top_k=20, 
                 filters=filters,
             )
 
@@ -419,7 +403,6 @@ class ChatService:
 
             node_postprocessors: list[BaseNodePostprocessor] = [
                 MetadataReplacementPostProcessor(target_metadata_key="window"),
-                KeywordRelevanceFilterPostprocessor(min_hit_ratio=0.06, min_hits=1, max_nodes=10),
                 self.reranker,  # <-- Reutilizamos el modelo en memoria (latencia 0s)
                 IdTaggingPostprocessor(), # <-- Etiquetado para citas
             ]
@@ -518,6 +501,14 @@ class ChatService:
                         return CompletionGen(response=self._mock_stream_generator(json.dumps(mock, ensure_ascii=False)), sources=[])
                     if intent_type == "FUNCTION": 
                         json_resp = f'{{"response": "Procesando...", "action": "FUNCTION", "function_name": "{payload}"}}'
+                        return CompletionGen(response=self._mock_stream_generator(json_resp), sources=[])
+                    if intent_type == "TECH_ISSUE":
+                        json_resp = json.dumps({
+                            "response": payload,
+                            "action": "TECH_ISSUE", 
+                            "function_name": None,
+                            "classification": "PLATFORM_OR_TECH_ISSUE"
+                        }, ensure_ascii=False)
                         return CompletionGen(response=self._mock_stream_generator(json_resp), sources=[])
 
                     # CASO RAG:

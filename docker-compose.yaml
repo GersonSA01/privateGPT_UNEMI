@@ -1,6 +1,6 @@
 services:
   # =================================================================
-  # 1. OLLAMA LLM (LLAMA 3.1 - Cerebro)
+  # 1. OLLAMA LLM (GEMMA 2 - Cerebro)
   # =================================================================
   ollama-llm:
     image: ollama/ollama:latest
@@ -65,7 +65,7 @@ services:
       wait &&
       echo '🔥 (3/4) CARGANDO EMBEDDING (bge-m3) EN RAM...' &&
       curl -s -X POST http://ollama-embed:11434/api/embeddings -d '{\"model\":\"bge-m3\",\"prompt\":\"warmup\"}' > /dev/null &&
-      echo '🧠 (4/4) CARGANDO LLM (LLAMA 3.1) VÍA /api/chat (CTX=4096)...' &&
+      echo '🧠 (4/4) CARGANDO LLM (GEMMA 2) VÍA /api/chat (CTX=4096)...' &&
       curl -fsS --fail-with-body -H 'Content-Type: application/json' -X POST http://ollama-llm:11434/api/chat -d '{\"model\":\"llama3.1\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_ctx\":4096,\"num_predict\":1},\"messages\":[{\"role\":\"system\",\"content\":\"warmup\"},{\"role\":\"user\",\"content\":\"ping\"}]}' > /dev/null &&
       echo '✅ TODO LISTO: Modelos cargados y memoria reservada.'"
 
