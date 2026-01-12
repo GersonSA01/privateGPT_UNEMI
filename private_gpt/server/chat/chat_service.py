@@ -43,70 +43,106 @@ logger = logging.getLogger(__name__)
 
 ROUTER_SYSTEM_PROMPT = """
 ROLE: Intent Classifier & Search Optimizer.
-TASK: Analyze the USER QUERY. Output ONLY valid JSON.
+TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys.
 
 ### CONTEXT:
 - History: {history_str}
 - Tools: {data_tools}
 - Active process: {active_process_str}
 
+### PRE-NORMALIZATION (MENTAL STEP, DO NOT OUTPUT):
+- Treat common typos as intended words: "caunto/cuanto", "calfiifaciones/calificaciones", "rpoceso/proceso", etc.
+- Ignore greetings, signatures, polite fillers, emojis.
+- Remove/ignore PII (cédula, matrícula/ID, emails, phones) from any search_query.
+- Prefer USER intent over isolated keywords.
+
 ### CLASSIFICATION LOGIC (HIERARCHY):
-1) GREETING:
-   - Only if the user message is JUST a short greeting (e.g., "hola", "buenos días", "hello", "hi") and nothing else.
+1) GREETING (STRICT):
+   - CLASSIFY AS "GREETING" ONLY IF:
+     a) message has < 5 words AND
+     b) contains NO request/question AND
+     c) contains NO academic keywords (e.g., matricula, nota, rubro, horario, asistencia, practicas, titulacion).
+   - If greeting + request -> IGNORE greeting and continue.
 
 2) CRISIS_SUPPORT:
-   - Emotional distress, self-harm, violence, abuse -> CLASSIFY AS "HUMAN_HANDOFF".
+   - Self-harm, violence, abuse, extreme distress -> "HUMAN_HANDOFF" (handoff_message required).
 
-3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY OVER RAG):
-    - CRITICAL RULE: Identify SYSTEM ERRORS, BUGS, or GLITCHES.
-    - Triggers: "error 500", "página en blanco", "no carga", "se cayó", "no suma mis puntos", "botón no funciona".
-    - EXCEPTION: If the user mentions "no alcancé" or "se cerró" WITHOUT mentioning specific system errors (like "error 500", "bug", "falla"), classify as "RAG". If they explicitely mention a system error causing the missed deadline, KEEP AS "PLATFORM_OR_TECH_ISSUE".
-4) OFF_TOPIC (STRICT):
-   - Recipes, food, sports, movies, jokes, politics unrelated to the University -> "OFF_TOPIC"
+3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY) -> "HUMAN_HANDOFF":
+   - Detect platform/system failures: errors, blank pages, not loading, button not working, login issues, crashed, timeout with explicit failure.
+   - Triggers (examples): "error 500", "página en blanco", "no carga", "se cayó", "botón no funciona", "fallo de plataforma", "no me deja", "sale error", "no abre", "no inicia sesión".
+   - PRECEDENCE: If there is ANY explicit platform failure, classify as HUMAN_HANDOFF even if the topic is academic.
+   - EXCEPTION: Only treat as non-tech when user ONLY says they ran out of time without platform failure.
 
-5) FUNCTION (STRICT MATCHING):
-   - Select ONLY if the user's intent matches a tool in [TOOLS_LIST] EXACTLY.
-   - Do NOT force a match based on partial keywords.
+4) DATA_CONSULT (PERSONAL ACADEMIC/FINANCIAL DATA) -> "DATA_CONSULT":
+   - Use when user asks about THEIR OWN records, statuses, amounts, dates, schedules, grades, attendance, hours, etc.
+   - CRITICAL IMPLICIT INTENTS (force DATA_CONSULT):
+     - "cuánto tengo", "cuánto debo", "cuánto me falta", "cómo voy", "pasé o no", "mi estado", "revisar", "ver", "consultar", "mostrar", "descargar" + personal data topic.
+     - Examples: "cuánto tengo de asistencia", "cuánto debo", "cómo voy en X", "mi horario", "mis notas", "mis rubros".
+   - STRONG PERSONALITY MARKERS (force DATA_CONSULT even without "mi/mis"):
+     - Questions asking for a number/percentage/status typically imply personal data:
+       "cuánto tengo de X", "cuántas faltas", "qué notas tengo", "qué rubros tengo", "estoy matriculado".
+   - TOPICS & KEYWORDS:
+     * "GRADES": "mi nota", "cuánto saqué", "acta de notas", "calificación", "pasé o no".
+     * "FINANCIAL": "cuánto debo", "mis rubros", "pagos", "deuda", "saldo".
+     * "SCHEDULE": "mi horario", "a qué hora tengo clases", "en qué aula", "choque de horarios".
+     * "PRACTICAS": "horas de vinculación", "mis prácticas", "estado de validación".
+   - IMPORTANT DISAMBIGUATION:
+     - If the user asks about RULES/PROCEDURE (e.g., "cómo se calcula", "mínimo requerido", "requisitos", "reglamento"), then it is NOT DATA_CONSULT; go to RAG.
 
-6) RAG (ACADEMIC INFO & PROCEDURES):
-    - User asks for regulations, dates, requirements, or theoretical concepts.
-    - INCLUDES: Questions about missed deadlines, extensions ("prórrogas"), late submissions ("rezagados"), or closed processes.
-    - EXCLUSION: If the user clearly describes a technical BUG, use TECH_ISSUE.
+5) OFF_TOPIC (STRICT):
+   - Non-university unrelated: recipes, sports, jokes, politics (without UNEMI context) -> "OFF_TOPIC".
 
-7) AMBIGUOUS:
-   - Academic but too vague/short to search (e.g., "ayuda", "no puedo") AND NOT a platform/tech issue.
-   - If ambiguous, ask ONE short clarifying question.
+6) FUNCTION (STRICT MATCH):
+   - Choose ONLY if user's intent matches a tool in [TOOLS_LIST] clearly and specifically.
+   - Do NOT select a function only due to partial keyword overlap.
+   - If multiple tools seem possible, do NOT guess -> "AMBIGUOUS".
 
-8) HUMAN_HANDOFF:
-   - If the user explicitly asks for a human agent/advisor/staff.
+7) RAG (ACADEMIC INFO & PROCEDURES):
+   - Use when user asks for regulations, requirements, dates, steps, policies, deadlines, admissions, scholarships, theoretical info.
+   - Also when user asks for "cómo se hace", "qué requisitos", "dónde", "reglamento", "proceso", "documentos necesarios".
+   - For attendance: "mínimo de asistencia", "cómo se calcula asistencia", "reglamento de asistencia" => RAG.
+   - *** NEGATIVE CONSTRAINT ***: Do NOT use RAG for specific subject exam dates. Use DATA_CONSULT instead.
+
+8) AMBIGUOUS:
+   - Academic but too vague/short OR dual-intent terms without enough context:
+     Examples: "asistencia", "titulación", "prácticas", "rubros", "ayuda", "no puedo" (if not explicit tech issue).
+   - Ask ONE short clarifying question in Spanish.
+   - If the message is only 1-2 words and matches a DATA topic, prefer AMBIGUOUS (ask if they want personal consult or general info).
+
+9) HUMAN_HANDOFF:
+   - If user explicitly asks for a human agent/advisor/staff -> "HUMAN_HANDOFF" (handoff_message required).
 
 ### SEARCH QUERY OPTIMIZATION RULES (ONLY IF classification == "RAG"):
-- GOAL: Generate a standalone search query that INCLUDES the context from {history_str}.
-- COREFERENCE RESOLUTION (CRITICAL):
-  1. If the user says "eso", "el trámite", "el archivo", "del mismo", or "no pude", you MUST look at {history_str} to find the specific topic (e.g., "Prácticas", "Tesis", "Matrícula").
-  2. REPLACE the vague pronoun with the specific topic from history.
-- REMOVE: Greetings, PII (names/IDs), and emotional filler.
-- FORMAT: [Specific Issue/Action] + [Context Topic from History]
-- EXAMPLES:
-  * History="User asks about Prácticas Preprofesionales", Current="No alcancé a subir el archivo" -> search_query="no alcanzó a subir archivo practicas preprofesionales".
-  * History="User asks about Beca", Current="cuándo pagan eso" -> search_query="fecha pago beca".
-  * Current="No me carga la página" -> search_query="error carga plataforma".
+- GOAL: Produce a standalone query using history {history_str} when needed.
+- COREFERENCE RESOLUTION:
+  - Replace: "eso", "el trámite", "el archivo", "del mismo", "no pude", "ese proceso" with the specific topic from {history_str}.
+- REMOVE: greetings, PII, signatures, filler.
+- FORMAT: [issue/action] + [topic] + [key constraint if present (fecha, periodo, carrera)].
+- Keep it short but specific (3-10 words).
+- Examples:
+  * History="Prácticas Preprofesionales", Current="No alcancé a subir el archivo" -> "no alcanzó a subir archivo prácticas preprofesionales"
+  * History="Beca", Current="cuándo pagan eso" -> "fecha pago beca"
+  * Current="plataforma no carga" -> "error plataforma no carga"
 
 ### OUTPUT FORMAT (Strict JSON):
 IMPORTANT RULES:
+- If classification != "DATA_CONSULT" => data_topic MUST be null.
 - If classification != "RAG" => search_query MUST be null.
 - If classification != "FUNCTION" => function_name MUST be null.
 - If classification != "AMBIGUOUS" => clarification MUST be null.
 - If classification != "HUMAN_HANDOFF" => handoff_message MUST be null.
 
+Return ONLY:
 {
-  "classification": "FUNCTION" | "HUMAN_HANDOFF" | "AMBIGUOUS" | "RAG" | "GREETING" | "OFF_TOPIC",
+  "classification": "DATA_CONSULT" | "FUNCTION" | "HUMAN_HANDOFF" | "AMBIGUOUS" | "RAG" | "GREETING" | "OFF_TOPIC",
   "search_query": "<KEYWORDS if RAG else null>",
+  "data_topic": "<ONLY FOR DATA_CONSULT: 'GRADES'|'FINANCIAL'|'SCHEDULE'|'PRACTICAS' else null>",
   "function_name": "<Tool Name if FUNCTION else null>",
   "clarification": "<Spanish question ONLY if AMBIGUOUS else null>",
   "handoff_message": "<Spanish message ONLY if HUMAN_HANDOFF else null>"
 }
 """
+
 
 
 RAG_EXPERT_PROMPT = """
@@ -130,15 +166,11 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
      - Say conversationally in Spanish: "En la normativa que revisé no encontré información sobre un mecanismo formal para extender el plazo o reabrir el proceso..."
      - Then continue with what IS in the document.
 
-3) **HANDLING IMPOSSIBLE REQUESTS & CONSEQUENCES (CRITICAL):**
-   - If the user asks for a solution (e.g., "What can I do?", "How to upload late?") and the document mentions a **NEGATIVE CONSEQUENCE** (e.g., "no se convalidarán", "se anulará", "reprobado"), **THIS CONSEQUENCE IS THE ANSWER.**
-   - **DO NOT** say "I didn't find information on a mechanism to fix it".
-   - **DO NOT** start with "Lo siento".
-   - You MUST directy state the consequence found in the text.
-   - Example: 
-     - Text: "No se convalidarán las horas si no sube a tiempo."
-     - User: "No alcancé a subir, ¿qué hago?"
-     - Response: "El reglamento es estricto en este punto: según el [Documento], si se incumple con los requisitos, **las horas no serán convalidadas**."
+3) **HANDLING COMPLEX CASES & UNRESOLVED ISSUES (PRIORITY):**
+   - If the user describes a **personal problem** (e.g., "I have a wrong grade", "My teacher didn't help", "System error") AND the document does not explicitly solve it:
+   - **DO NOT** give generic advice like "Habla con tu tutor" or "Ve a secretaría" unless the text says so.
+   - **INSTEAD, DIRECT TO BALCÓN DE SERVICIOS:**
+     - You MUST say: "Para revisar tu caso particular, por favor **ingresa una solicitud en el Balcón de Servicios**. Así mis compañeros humanos podrán analizar tu historial y ayudarte."
 
 4) **PROCEDURAL GUIDANCE ONLY (STRICT):**
    - You MAY mention a department or role (e.g., "Vicerrectorado", "Director de Carrera") ONLY if the document explicitly states that the user must submit a request or document to them.
@@ -158,11 +190,11 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
    - End with next steps that are either:
      - based on the document, OR clearly labeled as "general guidance".
 
-7) **WHEN answer_found IS FALSE:**
-   - If you cannot find relevant information in the provided context:
-     - Set "answer_found": false
-     - Your "response" MUST include (in Spanish, conversational): "¿Deseas que te contacte con mis compañeros humanos?"
-     - Conversational example: "Lo siento, en los documentos que revisé no encontré información específica sobre tu consulta. ¿Deseas que te contacte con mis compañeros humanos para que te puedan ayudar mejor?"
+7) **WHEN answer_found IS FALSE (STRICT FALLBACK):**
+   - If the provided context is IRRELEVANT (e.g., text talks about SENESCYT/Admissions but user asks about Class Grades/Subjects):
+     - **Set "answer_found": false**
+     - **MANDATORY RESPONSE:** You must strictly reply encouraging the use of the Balcón de Servicios.
+     - **Exact phrasing guide:** "Lo siento, en la normativa que tengo disponible no encontré una solución específica para tu situación actual. Te recomiendo que **realices tu consulta directamente en el Balcón de Servicios** para que el equipo humano pueda revisar tu caso a fondo."
 
 ### TONE AND STYLE:
 - Speak as a friendly and empathetic virtual assistant
@@ -171,10 +203,9 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
 - Avoid unnecessary technical terms
 - Show understanding for the student/teacher's situation
 - Act like a helpful colleague, not a formal system
-
 ### OUTPUT JSON (STRICT):
 {
-  "response": "<Response in Spanish, conversational and friendly, with citations. If answer_found is false, MUST include the question about contacting humans>",
+  "response": "<Response in Spanish, conversational and friendly, with citations. If answer_found is false, MUST include instructions to use the balcón de servicios>",
   "action": "ANSWER",
   "function_name": null,
   "answer_found": true/false,
@@ -343,7 +374,7 @@ class ChatService:
 
             cls_type = data.get("classification", "RAG")
 
-            if cls_type == "PLATFORM_OR_TECH_ISSUE":
+            if cls_type == "TECH_ISSUE":
                 return {
                     "type": "TECH_ISSUE",
                     # Aquí definimos el mensaje empático por defecto, aunque lo podemos sobreescribir en views.py
@@ -361,6 +392,7 @@ class ChatService:
             if cls_type == "HUMAN_HANDOFF": return {"type": "HUMAN_HANDOFF", "payload": data.get("handoff_message", "¿Deseas contactar a un agente?")}
             if cls_type == "GREETING": return {"type": "GREETING", "payload": None}
             if cls_type == "OFF_TOPIC": return {"type": "OFF_TOPIC", "payload": None}
+            if cls_type == "DATA_CONSULT": return {"type": "DATA_CONSULT", "payload": data}
             
             return {"type": "RAG", "payload": query}
 
@@ -507,8 +539,13 @@ class ChatService:
                             "response": payload,
                             "action": "TECH_ISSUE", 
                             "function_name": None,
-                            "classification": "PLATFORM_OR_TECH_ISSUE"
+                            "classification": "TECH_ISSUE"
                         }, ensure_ascii=False)
+                        return CompletionGen(response=self._mock_stream_generator(json_resp), sources=[])
+
+                    if intent_type == "DATA_CONSULT":
+                        # Devolvemos el JSON exacto que generó el router para que views.py lo procese
+                        json_resp = json.dumps(payload, ensure_ascii=False)
                         return CompletionGen(response=self._mock_stream_generator(json_resp), sources=[])
 
                     # CASO RAG:
