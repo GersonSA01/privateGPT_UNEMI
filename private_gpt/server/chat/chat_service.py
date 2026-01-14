@@ -69,7 +69,7 @@ TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys
 
 3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY) -> "HUMAN_HANDOFF":
    - Detect platform/system failures: errors, blank pages, not loading, button not working, login issues, crashed, timeout with explicit failure.
-   - Triggers (examples): "error 500", "página en blanco", "no carga", "se cayó", "botón no funciona", "fallo de plataforma", "no me deja", "sale error", "no abre", "no inicia sesión".
+   - Triggers (examples): "error 500", "página en blanco", "no carga", "se cayó", "botón no funciona", "fallo de plataforma", "no me deja", "sale error", "no abre", "no inicia sesión", "se cerró el examen", "se bloqueó el test", "examen incompleto", "preguntas no cargan".
    - PRECEDENCE: If there is ANY explicit platform failure, classify as HUMAN_HANDOFF even if the topic is academic.
    - EXCEPTION: Only treat as non-tech when user ONLY says they ran out of time without platform failure.
 
@@ -81,13 +81,24 @@ TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys
    - STRONG PERSONALITY MARKERS (force DATA_CONSULT even without "mi/mis"):
      - Questions asking for a number/percentage/status typically imply personal data:
        "cuánto tengo de X", "cuántas faltas", "qué notas tengo", "qué rubros tengo", "estoy matriculado".
-   - TOPICS & KEYWORDS:
-     * "GRADES": "mi nota", "cuánto saqué", "acta de notas", "calificación", "pasé o no".
-     * "FINANCIAL": "cuánto debo", "mis rubros", "pagos", "deuda", "saldo".
-     * "SCHEDULE": "mi horario", "a qué hora tengo clases", "en qué aula", "choque de horarios".
+   - TOPICS & KEYWORDS (STRICT DISAMBIGUATION):
+     * "GRADES" (Notas):
+       - Keywords: "mi nota", "cuánto saqué", "acta de notas", "calificación", "pasé o no", "promedio".
+       - CRITICAL PATTERN: "Cuánto tengo en [Nombre de Materia]" -> This is ALWAYS 'GRADES', even if the subject is 'Economía', 'Contabilidad', 'Tributaria' or 'Finanzas'.
+       - Examples: "Cuánto tengo en marketing", "Cuánto tengo en gestión tributaria", "Nota de contabilidad".
+
+     * "FINANCIAL" (Financiero):
+       - Keywords: "cuánto debo", "mis rubros", "pagos", "deuda", "saldo", "valores a pagar", "arancel".
+       - CONSTRAINT: Do NOT classify as FINANCIAL just because the Subject Name sounds financial.
+       - VALID: "Cuánto debo de matrícula", "Tengo deuda pendiente".
+       - INVALID: "Cuánto tengo en Finanzas" (This is GRADES).
+
+     * "SCHEDULE" (Horario): "mi horario", "a qué hora tengo clases", "en qué aula", "choque de horarios".
      * "PRACTICAS": "horas de vinculación", "mis prácticas", "estado de validación".
-   - IMPORTANT DISAMBIGUATION:
-     - If the user asks about RULES/PROCEDURE (e.g., "cómo se calcula", "mínimo requerido", "requisitos", "reglamento"), then it is NOT DATA_CONSULT; go to RAG.
+
+     - IMPLICIT INTENTS:
+       - "cómo voy", "mi estado", "revisar" + Subject Name => GRADES.
+       - "cuánto me falta" + Money context => FINANCIAL.
 
 5) OFF_TOPIC (STRICT):
    - Non-university unrelated: recipes, sports, jokes, politics (without UNEMI context) -> "OFF_TOPIC".
@@ -97,17 +108,18 @@ TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys
    - Do NOT select a function only due to partial keyword overlap.
    - If multiple tools seem possible, do NOT guess -> "AMBIGUOUS".
 
-7) RAG (ACADEMIC INFO & PROCEDURES):
+7) AMBIGUOUS:
+   - CLASSIFY AS "AMBIGUOUS" IF:
+     a) The query is a **Noun Phrase only** (Subject/Concept) WITHOUT an explicit **Action Verb**.
+     b) The concept could logically be either a "Personal Status Check" (DATA) OR "General Information" (RAG).
+   - EXPLANATION: If the user types just "Beca", "Solicitud", "Matrícula", or "Prácticas" without saying "how to" (RAG) or "check my" (DATA), you DO NOT KNOW the intent.
+   - ACTION: Return "AMBIGUOUS" and ask a clarification question.
+
+8) RAG (ACADEMIC INFO & PROCEDURES):
    - Use when user asks for regulations, requirements, dates, steps, policies, deadlines, admissions, scholarships, theoretical info.
    - Also when user asks for "cómo se hace", "qué requisitos", "dónde", "reglamento", "proceso", "documentos necesarios".
    - For attendance: "mínimo de asistencia", "cómo se calcula asistencia", "reglamento de asistencia" => RAG.
    - *** NEGATIVE CONSTRAINT ***: Do NOT use RAG for specific subject exam dates. Use DATA_CONSULT instead.
-
-8) AMBIGUOUS:
-   - Academic but too vague/short OR dual-intent terms without enough context:
-     Examples: "asistencia", "titulación", "prácticas", "rubros", "ayuda", "no puedo" (if not explicit tech issue).
-   - Ask ONE short clarifying question in Spanish.
-   - If the message is only 1-2 words and matches a DATA topic, prefer AMBIGUOUS (ask if they want personal consult or general info).
 
 9) HUMAN_HANDOFF:
    - If user explicitly asks for a human agent/advisor/staff -> "HUMAN_HANDOFF" (handoff_message required).
