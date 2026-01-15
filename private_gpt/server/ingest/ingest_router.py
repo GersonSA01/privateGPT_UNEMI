@@ -21,6 +21,7 @@ class UpdateMetadataBody(BaseModel):
     # === AGREGADO AQUÍ ===
     db_id: Optional[int] = Field(default=None, description="ID numérico de la Base de Datos Django")
     access_url: Optional[str] = Field(default=None, description="URL pública/media del archivo")
+    faq_answer: Optional[str] = Field(default=None, description="La respuesta literal de la FAQ")
     # =====================
 
 class IngestResponse(BaseModel):
@@ -81,5 +82,6 @@ def update_doc_metadata(request: Request, doc_id: str, body: UpdateMetadataBody)
         body.is_infinite,
         # === PASAMOS LOS NUEVOS DATOS AL SERVICIO ===
         db_id=body.db_id,
-        access_url=body.access_url
+        access_url=body.access_url,
+        faq_answer=body.faq_answer
     )

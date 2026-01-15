@@ -50,6 +50,12 @@ TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys
 - Tools: {data_tools}
 - Active process: {active_process_str}
 
+### CORE REASONING (THE "LITMUS TEST"):
+Before classifying, ask yourself:
+1. **Is the user asking for a UNIVERSAL TRUTH?** (Rules, dates for everyone, procedures, definitions). -> **RAG**
+2. **Is the user asking for a PERSONAL REALITY?** (My grade, my debt, my schedule, my specific case status). -> **DATA_CONSULT**
+3. **Is the system BROKEN?** (Technical failure, error messages). -> **TECH_ISSUE**
+
 ### PRE-NORMALIZATION (MENTAL STEP, DO NOT OUTPUT):
 - Treat common typos as intended words: "caunto/cuanto", "calfiifaciones/calificaciones", "rpoceso/proceso", etc.
 - Ignore greetings, signatures, polite fillers, emojis.
@@ -67,7 +73,7 @@ TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys
 2) CRISIS_SUPPORT:
    - Self-harm, violence, abuse, extreme distress -> "HUMAN_HANDOFF" (handoff_message required).
 
-3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY) -> "HUMAN_HANDOFF":
+3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY) -> "TECH_ISSUE":
    - Detect platform/system failures: errors, blank pages, not loading, button not working, login issues, crashed, timeout with explicit failure.
    - Triggers (examples): "error 500", "página en blanco", "no carga", "se cayó", "botón no funciona", "fallo de plataforma", "no me deja", "sale error", "no abre", "no inicia sesión", "se cerró el examen", "se bloqueó el test", "examen incompleto", "preguntas no cargan".
    - PRECEDENCE: If there is ANY explicit platform failure, classify as HUMAN_HANDOFF even if the topic is academic.
@@ -331,6 +337,61 @@ class ChatService:
         
         logger.info(f"✅ [INIT] Reranker cargado y listo en {time.perf_counter()-t0:.2f}s")
 
+    # --- FAQ SYSTEM ---
+    def check_faq_match(self, query: str, threshold: float = 0.88) -> dict | None:
+        """
+        Busca EXCLUSIVAMENTE en documentos con role='faq_system'.
+        Si la similitud > threshold (ej. 0.88), retorna la respuesta pre-grabada.
+        """
+        try:
+            # 1. Filtro estricto: Solo buscar en FAQs
+            filters = MetadataFilters(
+                filters=[MetadataFilter(key="role", value="faq_system")]
+            )
+
+            # 2. Retriever rápido (Top 1)
+            retriever = self.index.as_retriever(
+                similarity_top_k=1,
+                filters=filters,
+            )
+            
+            # 3. Ejecutar búsqueda
+            nodes = retriever.retrieve(query)
+            
+            if not nodes:
+                logger.warning(f"⚠️ FAQ Check: No nodes found for query '{query}' with role='faq_system'")
+                return None
+            
+            # --- DEBUG PRINT ---
+            print(f"\n🔍 [DEBUG] FAQ Search for: '{query}'")
+            for i, node in enumerate(nodes):
+                print(f"   Node {i+1}: Score={node.score} | Metadata role={node.node.metadata.get('role')}")
+                print(f"   Excerpt: {node.text[:50]}...")
+            # -------------------
+                
+            best_match = nodes[0]
+            score = best_match.score if best_match.score else 0.0
+            
+            logger.info(f"🧐 FAQ Check: '{query}' vs '{best_match.text[:30]}...' | Score: {score}")
+
+            if score >= 0.70:  # Adjusted threshold from 0.88
+                # Extraer la respuesta desde los metadatos del nodo
+                metadata = best_match.node.metadata or {}
+                answer = metadata.get("faq_answer")
+                
+                if answer:
+                    return {
+                        "response": answer,
+                        "source": "FAQ Institucional",
+                        "score": score
+                    }
+            
+            return None
+
+        except Exception as e:
+            logger.error(f"⚠️ Error en FAQ check: {e}")
+            return None
+
     # --- DETECTOR DE INTENCIÓN (ROUTER) ---
     def _detect_intent(self, query: str, tools_str: str, chat_history: list[ChatMessage], current_process: str | None) -> dict:
         import unicodedata
@@ -498,6 +559,27 @@ class ChatService:
         
         is_reformulation_mode = False
         is_rag_expert_mode = False
+
+        # =================================================================
+        # ⚡ 0. FAQ FAST-PATH
+        # =================================================================
+        # Solo si no estamos en medio de un flujo forzado
+        if not chat_engine_input.system_message or "REFORMULATE" not in chat_engine_input.system_message.content:
+            logger.info("⚡ FAQ Fast-Path: Checking match...")
+            faq_result = self.check_faq_match(user_query)
+            
+            if faq_result:
+                logger.info("🚀 FAQ Hit! Respondiendo directamente.")
+                # Construimos un JSON de respuesta directa
+                json_resp = json.dumps({
+                    "response": faq_result["response"],
+                    "action": "ANSWER",
+                    "classification": "FAQ_HIT",
+                    "function_name": None,
+                    "sources": [{"title": "Preguntas Frecuentes", "url": None}]
+                }, ensure_ascii=False)
+                
+                return CompletionGen(response=self._mock_stream_generator(json_resp), sources=[])
 
         # Detectar Banderas (Flags) del Sistema
         if chat_engine_input.system_message:

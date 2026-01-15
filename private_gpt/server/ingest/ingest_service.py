@@ -117,7 +117,14 @@ class IngestService:
             settings=settings(),
         )
 
-    def _ingest_data(self, file_name: str, file_data: AnyStr, db_id: int | None = None) -> list[IngestedDoc]:
+    # Modificar para aceptar argumento 'metadata'
+    def _ingest_data(
+        self, 
+        file_name: str, 
+        file_data: AnyStr, 
+        db_id: int | None = None, 
+        metadata: dict | None = None  # <--- NUEVO ARGUMENTO
+    ) -> list[IngestedDoc]:
         logger.debug("Got file data of size=%s to ingest", len(file_data))
         with tempfile.NamedTemporaryFile(delete=False) as tmp:
             try:
@@ -127,7 +134,14 @@ class IngestService:
                 else:
                     path_to_tmp.write_text(str(file_data))
                 
-                initial_metadata = {"db_id": db_id} if db_id else {}
+                # --- CORRECCIÓN DE METADATA ---
+                # Combinamos el db_id con la metadata extra que recibamos
+                initial_metadata = {}
+                if db_id:
+                    initial_metadata["db_id"] = db_id
+                if metadata:
+                    initial_metadata.update(metadata)
+                # ------------------------------
                 
                 return self.ingest_file(file_name, path_to_tmp, metadata=initial_metadata)
             finally:
@@ -140,9 +154,11 @@ class IngestService:
         logger.info("Finished ingestion file_name=%s", file_name)
         return [IngestedDoc.from_document(document) for document in documents]
 
-    def ingest_text(self, file_name: str, text: str) -> list[IngestedDoc]:
+    # Modificar para aceptar argumento 'metadata'
+    def ingest_text(self, file_name: str, text: str, metadata: dict | None = None) -> list[IngestedDoc]:
         logger.debug("Ingesting text data with file_name=%s", file_name)
-        return self._ingest_data(file_name, text)
+        # Pasamos la metadata hacia abajo
+        return self._ingest_data(file_name, text, metadata=metadata)
 
     def ingest_bin_data(
         self, file_name: str, raw_file_data: BinaryIO, db_id: int | None = None
@@ -327,7 +343,8 @@ class IngestService:
         valid_to: str | None,
         is_infinite: bool,
         db_id: int | None = None,
-        access_url: str | None = None
+        access_url: str | None = None,
+        **kwargs
     ) -> None:
         logger.info(f"Updating metadata for doc_id={doc_id}: Roles={new_roles}, DB_ID={db_id}")
 
@@ -342,12 +359,18 @@ class IngestService:
             logger.warning(f"Document with doc_id={doc_id} not found in DocStore")
             return
 
+        # Capturar faq_answer si viene en los argumentos extra
+        faq_answer = kwargs.get('faq_answer')
+
         new_metadata_updates = {
             "role": new_roles,
             "is_infinite": is_infinite,
             "valid_from": valid_from if not is_infinite else None,
             "valid_to": valid_to if not is_infinite else None,
         }
+
+        if faq_answer:
+            new_metadata_updates["faq_answer"] = faq_answer
 
         if db_id is not None:
             new_metadata_updates["db_id"] = db_id
