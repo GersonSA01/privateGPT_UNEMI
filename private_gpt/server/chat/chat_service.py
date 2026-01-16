@@ -564,7 +564,7 @@ class ChatService:
         # ⚡ 0. FAQ FAST-PATH
         # =================================================================
         # Solo si no estamos en medio de un flujo forzado
-        if not chat_engine_input.system_message or "REFORMULATE" not in chat_engine_input.system_message.content:
+        if not chat_engine_input.system_message or ("REFORMULATE" not in chat_engine_input.system_message.content and "SKIP_FAQ" not in chat_engine_input.system_message.content):
             logger.info("⚡ FAQ Fast-Path: Checking match...")
             faq_result = self.check_faq_match(user_query)
             
