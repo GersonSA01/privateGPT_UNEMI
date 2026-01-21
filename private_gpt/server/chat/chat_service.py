@@ -40,7 +40,6 @@ logger = logging.getLogger(__name__)
 # 1. PROMPTS OPTIMIZADOS
 # ==============================================================================
 
-
 ROUTER_SYSTEM_PROMPT = """
 ROLE: Intent Classifier & Search Optimizer.
 TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys.
@@ -48,7 +47,6 @@ TASK: Analyze the USER QUERY. Output ONLY valid JSON. No markdown. No extra keys
 ### CONTEXT:
 - History: {history_str}
 - Tools: {data_tools}
-- Active process: {active_process_str}
 
 ### CORE REASONING (THE "LITMUS TEST"):
 Before classifying, ask yourself:
@@ -57,12 +55,13 @@ Before classifying, ask yourself:
 3. **Is the system BROKEN?** (Technical failure, error messages). -> **TECH_ISSUE**
 
 ### PRE-NORMALIZATION (MENTAL STEP, DO NOT OUTPUT):
-- Treat common typos as intended words: "caunto/cuanto", "calfiifaciones/calificaciones", "rpoceso/proceso", etc.
+- Treat common typos as intended words: "caunto/cuanto", "calfiifaciones/calificaciones", "rpoceso/proceso", "carrwra/carrera", "notss/notas".
 - Ignore greetings, signatures, polite fillers, emojis.
 - Remove/ignore PII (cédula, matrícula/ID, emails, phones) from any search_query.
 - Prefer USER intent over isolated keywords.
 
 ### CLASSIFICATION LOGIC (HIERARCHY):
+
 1) GREETING (STRICT):
    - CLASSIFY AS "GREETING" ONLY IF:
      a) message has < 5 words AND
@@ -79,7 +78,13 @@ Before classifying, ask yourself:
    - PRECEDENCE: If there is ANY explicit platform failure, classify as HUMAN_HANDOFF even if the topic is academic.
    - EXCEPTION: Only treat as non-tech when user ONLY says they ran out of time without platform failure.
 
-4) DATA_CONSULT (PERSONAL ACADEMIC/FINANCIAL DATA) -> "DATA_CONSULT":
+4) FUNCTION (TOOL MATCH - PRIORITY OVER RAG):
+   - **CRITICAL**: Choose ONLY if user's intent matches a tool in [TOOLS_LIST] clearly and specifically.
+   - **PRECEDENCE**: If the user's intent matches a specific tool (e.g., "Cambio de Carrera"), you MUST select FUNCTION even if the topic sounds like a "procedure" or "how-to".
+   - Do NOT select a function only due to partial keyword overlap, but allow semantic intent (e.g., "quiero cambiar de carrera" matches "CAMBIO DE CARRERA").
+   - If multiple tools seem possible, do NOT guess -> "AMBIGUOUS".
+
+5) DATA_CONSULT (PERSONAL ACADEMIC/FINANCIAL DATA) -> "DATA_CONSULT":
    - Use when user asks about THEIR OWN records, statuses, amounts, dates, schedules, grades, attendance, hours, etc.
    - CRITICAL IMPLICIT INTENTS (force DATA_CONSULT):
      - "cuánto tengo", "cuánto debo", "cuánto me falta", "cómo voy", "pasé o no", "mi estado", "revisar", "ver", "consultar", "mostrar", "descargar" + personal data topic.
@@ -106,13 +111,8 @@ Before classifying, ask yourself:
        - "cómo voy", "mi estado", "revisar" + Subject Name => GRADES.
        - "cuánto me falta" + Money context => FINANCIAL.
 
-5) OFF_TOPIC (STRICT):
+6) OFF_TOPIC (STRICT):
    - Non-university unrelated: recipes, sports, jokes, politics (without UNEMI context) -> "OFF_TOPIC".
-
-6) FUNCTION (STRICT MATCH):
-   - Choose ONLY if user's intent matches a tool in [TOOLS_LIST] clearly and specifically.
-   - Do NOT select a function only due to partial keyword overlap.
-   - If multiple tools seem possible, do NOT guess -> "AMBIGUOUS".
 
 7) AMBIGUOUS:
    - CLASSIFY AS "AMBIGUOUS" IF:
@@ -125,7 +125,7 @@ Before classifying, ask yourself:
    - Use when user asks for regulations, requirements, dates, steps, policies, deadlines, admissions, scholarships, theoretical info.
    - Also when user asks for "cómo se hace", "qué requisitos", "dónde", "reglamento", "proceso", "documentos necesarios".
    - For attendance: "mínimo de asistencia", "cómo se calcula asistencia", "reglamento de asistencia" => RAG.
-   - *** NEGATIVE CONSTRAINT ***: Do NOT use RAG for specific subject exam dates. Use DATA_CONSULT instead.
+   - *** NEGATIVE CONSTRAINT ***: Do NOT use RAG if the intent matches a specific tool in [TOOLS_LIST]. Do NOT use RAG for specific subject exam dates. Use DATA_CONSULT instead.
 
 9) HUMAN_HANDOFF:
    - If user explicitly asks for a human agent/advisor/staff -> "HUMAN_HANDOFF" (handoff_message required).
@@ -152,7 +152,7 @@ IMPORTANT RULES:
 
 Return ONLY:
 {
-  "classification": "DATA_CONSULT" | "FUNCTION" | "HUMAN_HANDOFF" | "AMBIGUOUS" | "RAG" | "GREETING" | "OFF_TOPIC",
+  "classification": "DATA_CONSULT" | "FUNCTION" | "HUMAN_HANDOFF" | "AMBIGUOUS" | "RAG" | "GREETING" | "OFF_TOPIC" | "TECH_ISSUE",
   "search_query": "<KEYWORDS if RAG else null>",
   "data_topic": "<ONLY FOR DATA_CONSULT: 'GRADES'|'FINANCIAL'|'SCHEDULE'|'PRACTICAS' else null>",
   "function_name": "<Tool Name if FUNCTION else null>",
@@ -393,7 +393,7 @@ class ChatService:
             return None
 
     # --- DETECTOR DE INTENCIÓN (ROUTER) ---
-    def _detect_intent(self, query: str, tools_str: str, chat_history: list[ChatMessage], current_process: str | None) -> dict:
+    def _detect_intent(self, query: str, tools_str: str, chat_history: list[ChatMessage]) -> dict:
         import unicodedata
         
         raw_query = (query or "").strip()
@@ -408,7 +408,6 @@ class ChatService:
         if not tools_str or len(tools_str) < 5:
             return {"type": "RAG", "payload": query}
 
-        active_process_str = f'"{current_process}"' if current_process else "NONE"
         history_str = "None"
         if chat_history:
             # Tomar los últimos 6 mensajes (aproximadamente 3 turnos)
@@ -422,7 +421,7 @@ class ChatService:
             if parts:
                 history_str = " | ".join(parts)
 
-        formatted_system_prompt = ROUTER_SYSTEM_PROMPT.replace("{data_tools}", tools_str).replace("{history_str}", history_str).replace("{active_process_str}", active_process_str)
+        formatted_system_prompt = ROUTER_SYSTEM_PROMPT.replace("{data_tools}", tools_str).replace("{history_str}", history_str)
 
         messages = [
             ChatMessage(role=MessageRole.SYSTEM, content=formatted_system_prompt),
@@ -598,18 +597,11 @@ class ChatService:
             if chat_engine_input.system_message:
                 raw_system = chat_engine_input.system_message.content
                 # Extracción de herramientas pasadas por Django
-                current_process_val: str | None = None
                 data_tools = raw_system
-                marker_start = data_tools.find("[ACTIVE_PROCESS]")
-                marker_end = data_tools.find("[/ACTIVE_PROCESS]", marker_start + 1)
-                if marker_start != -1 and marker_end != -1:
-                    inside = data_tools[marker_start + len("[ACTIVE_PROCESS]") : marker_end]
-                    current_process_val = inside.strip().strip('"')
-                    data_tools = data_tools[:marker_start] + data_tools[marker_end + len("[/ACTIVE_PROCESS]") :]
 
                 if "[TOOLS_LIST]" in data_tools:
                     router_history = chat_engine_input.chat_history or []
-                    intent_result = self._detect_intent(user_query, data_tools, router_history, current_process=current_process_val)
+                    intent_result = self._detect_intent(user_query, data_tools, router_history)
                     intent_type = intent_result["type"]
                     payload = intent_result["payload"]
                     
