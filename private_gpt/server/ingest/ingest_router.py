@@ -80,7 +80,6 @@ def update_doc_metadata(request: Request, doc_id: str, body: UpdateMetadataBody)
         body.valid_from, 
         body.valid_to, 
         body.is_infinite,
-        # === PASAMOS LOS NUEVOS DATOS AL SERVICIO ===
         db_id=body.db_id,
         access_url=body.access_url,
         faq_answer=body.faq_answer

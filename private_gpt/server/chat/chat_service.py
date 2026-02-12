@@ -6,6 +6,7 @@ from injector import inject, singleton
 import json
 import re  # Vital para Regex y limpieza de texto
 import time # Vital para medir latencia
+import math  # Vital para simulitud coseno
 
 from llama_index.core.chat_engine import ContextChatEngine, SimpleChatEngine
 from llama_index.core.chat_engine.types import BaseChatEngine
@@ -63,56 +64,44 @@ Before classifying, ask yourself:
 ### CLASSIFICATION LOGIC (HIERARCHY):
 
 1) GREETING (STRICT):
-   - CLASSIFY AS "GREETING" ONLY IF:
-     a) message has < 5 words AND
-     b) contains NO request/question AND
-     c) contains NO academic keywords (e.g., matricula, nota, rubro, horario, asistencia, practicas, titulacion).
-   - If greeting + request -> IGNORE greeting and continue.
+   - Message < 5 words, NO academic keywords, NO request.
 
 2) CRISIS_SUPPORT:
    - Self-harm, violence, abuse, extreme distress -> "HUMAN_HANDOFF" (handoff_message required).
 
 3) PLATFORM_OR_TECH_ISSUE (HIGHEST PRIORITY) -> "TECH_ISSUE":
-   - Detect platform/system failures: errors, blank pages, not loading, button not working, login issues, crashed, timeout with explicit failure.
-   - Triggers (examples): "error 500", "página en blanco", "no carga", "se cayó", "botón no funciona", "fallo de plataforma", "no me deja", "sale error", "no abre", "no inicia sesión", "se cerró el examen", "se bloqueó el test", "examen incompleto", "preguntas no cargan".
-   - PRECEDENCE: If there is ANY explicit platform failure, classify as HUMAN_HANDOFF even if the topic is academic.
-   - EXCEPTION: Only treat as non-tech when user ONLY says they ran out of time without platform failure.
+   - Explicit system errors ("error 500", "doesn't load", "blank page", "button broken").
 
-4) FUNCTION (TOOL MATCH - PRIORITY OVER RAG):
-   - **CRITICAL**: Choose ONLY if user's intent matches a tool in [TOOLS_LIST] clearly and specifically.
-   - **PRECEDENCE**: If the user's intent matches a specific tool (e.g., "Cambio de Carrera"), you MUST select FUNCTION even if the topic sounds like a "procedure" or "how-to".
-   - Do NOT select a function only due to partial keyword overlap, but allow semantic intent (e.g., "quiero cambiar de carrera" matches "CAMBIO DE CARRERA").
-   - If multiple tools seem possible, do NOT guess -> "AMBIGUOUS".
+4) FUNCTION (TOOL MATCH - SCOPE VALIDATION LOGIC):
+   - **CRITICAL: DO NOT MATCH BY KEYWORDS. MATCH BY SCOPE.**
+   - For a query to match a Tool, it must pass the **"Double-Lock Test"**:
+     
+     * **LOCK 1: THE ENTITY MATCH (The "What")**
+         - The user's target entity (e.g., "Materia", "Beca", "Horario") MUST be semantically identical to the Tool's target entity (e.g., "Carrera").
+         - **Logic:** If Tool is for X, and User asks for Y, and X != Y -> **REJECT TOOL**.
+         - *Example:* Tool "CAMBIO DE CARRERA" operates on "Degrees/Majors". User asks about "Materias/Subjects". Since Subject != Degree -> **REJECT**.
+
+     * **LOCK 2: THE ACTION MATCH (The "How")**
+         - The user's desired action (e.g., "Add", "View", "Delete") MUST be supported by the tool.
+         - *Example:* If Tool is "SOLICITUD DE...", it implies a formal request. If user asks "Cuándo son las solicitudes...", that is a question about dates -> **REJECT (Use RAG)**.
+
+   - **DEFAULT BEHAVIOR:** If the query fails either lock, **DO NOT FORCE A MATCH**. Fallback immediately to **RAG** (for procedures) or **DATA_CONSULT** (for status).
 
 5) DATA_CONSULT (PERSONAL ACADEMIC/FINANCIAL DATA) -> "DATA_CONSULT":
-   - Use when user asks about THEIR OWN records, statuses, amounts, dates, schedules, grades, attendance, hours, etc.
-   - CRITICAL IMPLICIT INTENTS (force DATA_CONSULT):
-     - "cuánto tengo", "cuánto debo", "cuánto me falta", "cómo voy", "pasé o no", "mi estado", "revisar", "ver", "consultar", "mostrar", "descargar" + personal data topic.
-     - Examples: "cuánto tengo de asistencia", "cuánto debo", "cómo voy en X", "mi horario", "mis notas", "mis rubros".
-   - STRONG PERSONALITY MARKERS (force DATA_CONSULT even without "mi/mis"):
-     - Questions asking for a number/percentage/status typically imply personal data:
-       "cuánto tengo de X", "cuántas faltas", "qué notas tengo", "qué rubros tengo", "estoy matriculado".
-   - TOPICS & KEYWORDS (STRICT DISAMBIGUATION):
-     * "GRADES" (Notas):
-       - Keywords: "mi nota", "cuánto saqué", "acta de notas", "calificación", "pasé o no", "promedio".
-       - CRITICAL PATTERN: "Cuánto tengo en [Nombre de Materia]" -> This is ALWAYS 'GRADES', even if the subject is 'Economía', 'Contabilidad', 'Tributaria' or 'Finanzas'.
-       - Examples: "Cuánto tengo en marketing", "Cuánto tengo en gestión tributaria", "Nota de contabilidad".
-
-     * "FINANCIAL" (Financiero):
-       - Keywords: "cuánto debo", "mis rubros", "pagos", "deuda", "saldo", "valores a pagar", "arancel".
-       - CONSTRAINT: Do NOT classify as FINANCIAL just because the Subject Name sounds financial.
-       - VALID: "Cuánto debo de matrícula", "Tengo deuda pendiente".
-       - INVALID: "Cuánto tengo en Finanzas" (This is GRADES).
-
-     * "SCHEDULE" (Horario): "mi horario", "a qué hora tengo clases", "en qué aula", "choque de horarios".
-     * "PRACTICAS": "horas de vinculación", "mis prácticas", "estado de validación".
-
-     - IMPLICIT INTENTS:
-       - "cómo voy", "mi estado", "revisar" + Subject Name => GRADES.
-       - "cuánto me falta" + Money context => FINANCIAL.
+    Use when user asks about THEIR OWN records, statuses, amounts, dates, schedules, grades, attendance, hours, etc.
+    Force DATA_CONSULT for: "Choque de horarios", "Cambio de paralelo", "Cambio de grupo", "Notas", "Deudas", "Módulo de Inglés", "Módulo de Computación/Informática", "Examen de Suficiencia".
+    KEYWORDS: "cuánto tengo", "cuánto debo", "mi horario", "mis faltas", "cómo voy", "mi módulo", "estoy matriculado".
+    DISAMBIGUATION (data_topic logic):
+    GRADES:
+    "Cuánto tengo en [Materia/Módulo]".
+    Any query about English Modules, Computing Modules, or Proficiency Exams (Suficiencia) regarding status, grades, or "if I'm enrolled" (e.g., "no me sale el módulo", "quiero ver mi nota de inglés").
+    FINANCIAL:
+    "Cuánto debo", "pagos pendientes", "factura de módulo".
+    SCHEDULE:
+    "Mi horario", "a qué hora me toca", "choque de horas".
 
 6) OFF_TOPIC (STRICT):
-   - Non-university unrelated: recipes, sports, jokes, politics (without UNEMI context) -> "OFF_TOPIC".
+    Non-university unrelated: recipes, sports, jokes, politics (without UNEMI context) -> "OFF_TOPIC".
 
 7) AMBIGUOUS:
    - CLASSIFY AS "AMBIGUOUS" IF:
@@ -124,8 +113,8 @@ Before classifying, ask yourself:
 8) RAG (ACADEMIC INFO & PROCEDURES):
    - Use when user asks for regulations, requirements, dates, steps, policies, deadlines, admissions, scholarships, theoretical info.
    - Also when user asks for "cómo se hace", "qué requisitos", "dónde", "reglamento", "proceso", "documentos necesarios".
+   - **FALLBACK**: If user wants to perform an action (e.g., "Change Schedule") and NO exact tool exists for it, classify as **RAG** (to explain the procedure) or **DATA_CONSULT** (to check status), never invent a function.
    - For attendance: "mínimo de asistencia", "cómo se calcula asistencia", "reglamento de asistencia" => RAG.
-   - *** NEGATIVE CONSTRAINT ***: Do NOT use RAG if the intent matches a specific tool in [TOOLS_LIST]. Do NOT use RAG for specific subject exam dates. Use DATA_CONSULT instead.
 
 9) HUMAN_HANDOFF:
    - If user explicitly asks for a human agent/advisor/staff -> "HUMAN_HANDOFF" (handoff_message required).
@@ -162,7 +151,6 @@ Return ONLY:
 """
 
 
-
 RAG_EXPERT_PROMPT = """
 ROLE: UNEMI Virtual Assistant - You are a friendly agent helping students and teachers.
 TASK: Answer the user using ONLY the information from the provided documents.
@@ -171,12 +159,18 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
 
 ### CORE RULES:
 1) **CITATIONS (CRITICAL):**
-   - You MUST mention the **Document Name** (if present in context) and the **Article/Section** if it appears.
+   - You MUST mention the **Document Name** (if present in context) and the **Article/Section** if it appears NOT THE ID.
    - Conversational format in Spanish:
      - "Según el [Document Name], en el Artículo X..." or "Según el [Document Name], en la Sección Y..."
    - If there's no article/section number, mention what you have available in a natural way.
 
-2) **NO MADE-UP PROCEDURES:**
+2) **DISAMBIGUATION - "PUNTAJES" vs "NOTAS" (CRITICAL):**
+   - **"Puntaje Referencial / Corte":** Refers to the score required to ENTER the university (Access). Usually numbers like 700, 800, 900.
+   - **"Puntaje de Aprobación / Nota Mínima":** Refers to the grade required to PASS a subject. Usually 70/100.
+   - **RULE:** If the user asks for "Puntaje para la carrera X" (Admission Context) and you ONLY find "Artículo 53 / Nota de 70" (Grading Context), **DO NOT USE IT**.
+   - Instead, say: "Lo siento, en los documentos actuales no tengo el listado de puntajes referenciales de admisión para esa carrera específica."
+
+3) **NO MADE-UP PROCEDURES:**
    - Do NOT state as FACT that the user can request:
      - deadline extension / reopening / exception / appeal
      unless the document explicitly mentions that mechanism.
@@ -184,31 +178,33 @@ LANGUAGE: You MUST respond ALWAYS in SPANISH. Use a conversational, friendly, an
      - Say conversationally in Spanish: "En la normativa que revisé no encontré información sobre un mecanismo formal para extender el plazo o reabrir el proceso..."
      - Then continue with what IS in the document.
 
-3) **HANDLING COMPLEX CASES & UNRESOLVED ISSUES (PRIORITY):**
+4) **HANDLING COMPLEX CASES & UNRESOLVED ISSUES (PRIORITY):**
    - If the user describes a **personal problem** (e.g., "I have a wrong grade", "My teacher didn't help", "System error") AND the document does not explicitly solve it:
    - **DO NOT** give generic advice like "Habla con tu tutor" or "Ve a secretaría" unless the text says so.
    - **INSTEAD, DIRECT TO BALCÓN DE SERVICIOS:**
      - You MUST say: "Para revisar tu caso particular, por favor **ingresa una solicitud en el Balcón de Servicios**. Así mis compañeros humanos podrán analizar tu historial y ayudarte."
 
-4) **PROCEDURAL GUIDANCE ONLY (STRICT):**
+5) **PROCEDURAL GUIDANCE ONLY (STRICT):**
    - You MAY mention a department or role (e.g., "Vicerrectorado", "Director de Carrera") ONLY if the document explicitly states that the user must submit a request or document to them.
    - You MUST NOT add generic advice like "Te recomiendo contactar a..." or "Podrías preguntar en..." if the text does not strictly say so.
    - If the document lists a step, state it as a rule ("El reglamento indica entregar esto en Secretaría"), NOT as your personal suggestion.
 
-5) **CONTROLLED INFERENCE:**
+6) **CONTROLLED INFERENCE:**
    - If the exact scenario is not mentioned but the document has a general rule that reasonably applies
      (deadlines, requirements, force majeure, validation steps), you may adapt it.
    - When inferring, use cautious phrasing in Spanish:
      - "Según lo que establece el reglamento..." / "En general, el reglamento indica..." / "Esto sugiere que..."
    - Never invent timeframes, forms, departments, or approvals not present in the context.
+   - **DO NOT** give generic advice like "Habla con tu tutor" or "Ve a secretaría" unless the text says so.
+   - **INSTEAD, DIRECT TO BALCÓN DE SERVICIOS:**
 
-6) **BRIDGE WITH THE USER:**
+7) **BRIDGE WITH THE USER:**
    - Acknowledge the user's situation in 1 sentence (in Spanish, friendly).
    - Then cite the rule and explain what it implies (in Spanish, conversational).
    - End with next steps that are either:
      - based on the document, OR clearly labeled as "general guidance".
 
-7) **WHEN answer_found IS FALSE (STRICT FALLBACK):**
+8) **WHEN answer_found IS FALSE (STRICT FALLBACK):**
    - If the provided context is IRRELEVANT (e.g., text talks about SENESCYT/Admissions but user asks about Class Grades/Subjects):
      - **Set "answer_found": false**
      - **MANDATORY RESPONSE:** You must strictly reply encouraging the use of the Balcón de Servicios.
@@ -392,6 +388,57 @@ class ChatService:
             logger.error(f"⚠️ Error en FAQ check: {e}")
             return None
 
+    # --- MÉTODO DE VERIFICACIÓN VECTORIAL (CORREGIDO: SIMILITUD COSENO) ---
+    def _verify_tool_relevance(self, user_query: str, tool_name: str, tools_str: str) -> bool:
+        """
+        Calcula si la 'user_query' realmente tiene sentido semántico con el 'tool_name' elegido.
+        Usa Similitud Coseno para garantizar un score entre 0 y 1.
+        """
+        try:
+            if not tool_name:
+                return False
+
+            # 1. Extraer Scope
+            pattern = f'FUNCTION_NAME: "{re.escape(tool_name)}".*?SCOPE: "(.*?)"'
+            match = re.search(pattern, tools_str, re.DOTALL)
+            
+            if not match:
+                logger.warning(f"⚠️ Tool '{tool_name}' no encontrada para verificación.")
+                return True 
+
+            tool_scope = match.group(1)
+            
+            # 2. Vectorizar
+            embed_model = self.embedding_component.embedding_model
+            query_vec = embed_model.get_query_embedding(user_query)
+            scope_vec = embed_model.get_text_embedding(tool_scope)
+            
+            # 3. Calcular Similitud Coseno Real (Normalizada)
+            # Fórmula: (A . B) / (||A|| * ||B||)
+            dot_product = sum(a*b for a, b in zip(query_vec, scope_vec))
+            
+            magnitude_query = math.sqrt(sum(a*a for a in query_vec))
+            magnitude_scope = math.sqrt(sum(b*b for b in scope_vec))
+            
+            if magnitude_query == 0 or magnitude_scope == 0:
+                return False
+            
+            score = dot_product / (magnitude_query * magnitude_scope)
+            
+            logger.info(f"📐 Verification Score (Normalizado): {score:.4f} | Tool: '{tool_name}'")
+
+            # 4. UMBRAL DE CORTE
+            # Ahora que el score es 0-1, el 0.75 funcionará perfecto.
+            # "Adicionar materia" vs "Cambio de carrera" debería dar ~0.4 o 0.5
+            if score < 0.75:
+                return False
+            
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ Error en verificación vectorial: {e}")
+            return True
+
     # --- DETECTOR DE INTENCIÓN (ROUTER) ---
     def _detect_intent(self, query: str, tools_str: str, chat_history: list[ChatMessage]) -> dict:
         import unicodedata
@@ -459,7 +506,20 @@ class ChatService:
                 return {"type": "RAG", "payload": optimized_query}
             
             # El resto sigue igual
-            if cls_type == "FUNCTION": return {"type": "FUNCTION", "payload": data.get("function_name")}
+            if cls_type == "FUNCTION": 
+                func_name = data.get("function_name")
+                
+                # --- INICIO DE LA VERIFICACIÓN ---
+                # Si el LLM dice que es una función, verificamos matemáticamente si tiene sentido.
+                is_valid = self._verify_tool_relevance(query, func_name, tools_str)
+                
+                if not is_valid:
+                    logger.warning(f"🛡️ Router Correction: El LLM eligió '{func_name}' pero el vector score fue bajo. Forzando RAG.")
+                    # Forzamos RAG usando la query original
+                    return {"type": "RAG", "payload": query}
+                # --- FIN DE LA VERIFICACIÓN ---
+
+                return {"type": "FUNCTION", "payload": func_name}
             if cls_type == "AMBIGUOUS": return {"type": "AMBIGUOUS", "payload": data.get("clarification", "¿Podrías ser más específico?")}
             if cls_type == "HUMAN_HANDOFF": return {"type": "HUMAN_HANDOFF", "payload": data.get("handoff_message", "¿Deseas contactar a un agente?")}
             if cls_type == "GREETING": return {"type": "GREETING", "payload": None}

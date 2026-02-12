@@ -53,4 +53,4 @@ USER worker
 ENTRYPOINT python -m uvicorn private_gpt.main:app \
     --host 0.0.0.0 \
     --port 8001 \
-    --workers 1
+    --workers 2

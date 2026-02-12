@@ -1,6 +1,6 @@
 services:
   # =================================================================
-  # 1. OLLAMA LLM (GEMMA 2 - Cerebro)
+  # 1. OLLAMA LLM (LLAMA 3. - Cerebro)
   # =================================================================
   ollama-llm:
     image: ollama/ollama:latest
@@ -12,8 +12,9 @@ services:
       - ollama_llm_data:/root/.ollama
     environment:
       - OLLAMA_KEEP_ALIVE=-1
-      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_NUM_PARALLEL=4
       - OLLAMA_CONTEXT_LENGTH=4096
+      - TZ=America/Guayaquil
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -33,8 +34,9 @@ services:
       - ollama_embed_data:/root/.ollama
     environment:
       - OLLAMA_KEEP_ALIVE=-1
-      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_NUM_PARALLEL=4
       - OLLAMA_CONTEXT_LENGTH=2048
+      - TZ=America/Guayaquil
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s
@@ -81,6 +83,8 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+    environment:
+      - TZ=America/Guayaquil
 
   # =================================================================
   # 5. PRIVATE GPT (Tu aplicación)
@@ -111,6 +115,7 @@ services:
       PORT: 8001
       PGPT_MODE: ollama
       PGPT_EMBED_MODE: ollama
+      TZ: America/Guayaquil
 
       PGPT_OLLAMA_API_BASE: http://ollama-llm:11434
       PGPT_OLLAMA_EMBEDDING_API_BASE: http://ollama-embed:11434
